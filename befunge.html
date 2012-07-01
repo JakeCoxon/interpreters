@@ -1,0 +1,659 @@
+
+<html>
+<head>
+
+<title>Befunge Interpreter</title>
+<script type="text/javascript">
+function $(s) { return typeof(s) == "string" ? document.getElementById(s) : s; }
+var Dom = {
+	add: function(dest, type) { var el = document.createElement(type); var dest = $(dest); dest.appendChild(el); return el; },
+	addBefore: function(dest, type) { var el = document.createElement(type); var dest = $(dest); dest.parentNode.insertBefore(el, dest); return el; },
+	addText: function(dest, text) { var node = document.createTextNode(text); var dest = $(dest); dest.appendChild(node); return node; },
+	remove: function(el) { var el = $(el); el.parentNode.removeChild(el); },
+	removeAll: function(el) { el = $(el); if(el.hasChildNodes()) while(el.childNodes.length > 0) Dom.remove(el.firstChild); }
+};
+var Event = {
+	add: function(t,ev,fn) { var t = $(t); if(typeof document.addEventListener != 'undefined') t.addEventListener(ev,fn,false); else t.attachEvent('on' + ev,fn); }
+};
+
+function o(a) { return a ? a : 0; }
+function log(str) { if(console && console.log) console.log(str); }
+function logarray(arr) { var str = ""; for(var i=0; i<arr.length; i++) str += arr[i]+","; log(str); }
+
+var interpreter = new function() {
+	
+	var el_code;
+	var el_input;
+	var el_output;
+	var el_stack;
+	
+	var stack = [];
+	var velocity = [0, 0];
+	var cells = [];
+	
+	var max_width = 80;
+	var max_height = 25;
+	
+	var width = 0;
+	var height = 0;
+	
+	var pos = [0, 0];
+	var lastpos = [0, 0];
+	
+	var stringmode = false;
+	var outputtext = "";
+	
+	var loaded = false;
+	var finished = false;
+	
+	var newstack = [];
+	var oldstacknum = 0;
+	var dirty_output = false;
+	
+	var skipspace = true;
+	
+	// Commands //////////////////
+	
+	var docommand = function(c) {
+		switch(c) {
+		
+			case "+":
+				push(pop()+pop());
+			break;
+			case "-":
+				var a = pop();
+				push(pop()-a);
+			break;
+			case "*":
+				push(pop()*pop());
+			break;
+			case "/":
+				var a = pop();
+				if(a == 0) push(0);
+				else push(Math.floor(pop()/a));
+			break;
+			case "%":
+				var a = pop();
+				push(pop()%a);
+			break;
+			case "!":
+				push(pop() ? 0 : 1);
+			break;
+			case "`":
+				var a = pop();
+				push(pop() > a ? 1 : 0);
+			break;
+			case ">": setvel(1, 0); break;
+			case "<": setvel(-1, 0); break;
+			case "^": setvel(0, -1); break;
+			case "v": setvel(0, 1); break;
+			case "?":
+				var r = Math.floor(Math.random()*4);
+				if(r == 0) setvel(1, 0);
+				else if(r == 1) setvel(-1, 0);
+				else if(r == 2) setvel(0, -1);
+				else setvel(0, 1);
+			break;
+			case "_":
+				setvel(pop() ? -1 : 1, 0);
+			break;
+			case "|":
+				setvel(0, pop() ? -1 : 1);
+			break;
+			case "\"":
+				stringmode = !stringmode;
+			break;
+			case ":":
+				push(o(stack[stack.length-1]));
+			break;
+			case "\\":
+				var a = pop();
+				var b = pop();
+				push(a);
+				push(b);
+			break;
+			case "$":
+				pop();
+			break;
+			case ".":
+				output(String(pop())+" ");
+			break;
+			case ",":
+				output(String.fromCharCode(pop()));
+			break;
+			case "#":
+				setpos(pos[0] + velocity[0], pos[1] + velocity[1]);
+			break;
+			case "p":
+				var y = pop();
+				var x = pop();
+				putcell(x, y, String.fromCharCode(pop()));
+			break;
+			case "g":
+				var y = pop();
+				var x = pop();
+				push(getcell(x, y).charCodeAt(0));
+			break;
+			case "&":
+				updateinterface();
+				var a = Number(prompt("Input a number"));
+				if(!a) a = 0;
+				push(a);
+			break;
+			case "~":
+				updateinterface();
+				var a = prompt("Input a character");
+				if(!a || a.length == 0) a = 0;
+				else a = a.charCodeAt(0);
+				push(a);
+			break;
+			case "@":
+				end();
+			break;
+			
+			default:
+				var n = c.charCodeAt(0);
+				if(n >= 48 && n <= 57)
+					push(n-48);
+			break;
+		}
+	}
+	
+	// Private methods ////////////
+	
+	var push = function(i) {
+		stack.push(o(i));
+		newstack.push(o(i));
+	}
+	var pop = function() {
+		if(stack.length == 0) return 0;
+		
+		var a = stack.pop();
+		if(newstack.length > 0)
+			newstack.pop();
+		else
+			oldstacknum ++;
+		return o(a);
+	}
+	var setvel = function(x, y) {
+		velocity[0] = x;
+		velocity[1] = y;
+	}
+	var setpos = function(x, y) {
+		pos[0] = x;
+		pos[1] = y;
+		
+	}
+	var output = function(str) {
+		if(dirty_output) {
+			outputtext += str;
+		}
+		else {
+			outputtext = str;
+			dirty_output = true;
+		}
+	}
+	var putcell = function(x, y, a) {
+		// todo bounds check
+		cells[y][x] = a;
+		var cell = gettablecell(x, y);
+		cell.firstChild.nodeValue = a;
+	}
+	var getcell = function(x, y) {
+		if(x > max_width-1) x -= max_width;
+		else if(x < 0) x += max_width;
+		if(y> max_height-1) y -= max_height;
+		else if(y < 0) y += max_height;
+		return o(cells[y][x]);
+	}
+	
+	var start = function() {
+		while(newstack.length > 0) newstack.pop();
+		while(stack.length > 0) stack.pop();
+		while(cells.length > 0) cells.pop();
+		
+		var text = el_code.value;
+		var textlines = text.split("\n");
+		
+		var longest = 0;
+		for(var i=0; i<textlines.length; i++) {
+			var len = textlines[i].length;
+			if(len > longest)
+				longest = len;
+		}
+		
+		width = Math.min(longest, max_width);
+		height = Math.min(textlines.length, max_height);
+		
+		Dom.removeAll(el_input);
+		var table = Dom.add(el_input, "table");
+		var tbody = Dom.add(table, "tbody");
+		
+		for(var y=0; y<max_height; y++) {
+			
+			cells[y] = [];
+			var tr = Dom.add(tbody, "tr");
+			var line = textlines[y] || "";
+			
+			for(var x=0; x<max_width; x++) {
+				var char = line.charAt(x) || " ";
+				cells[y][x] = char;
+				var td = Dom.add(tr, "td");
+				Dom.addText(td, char == " " ? "\xa0" : char);
+			}
+		}
+		
+		//
+		
+		setvel(1, 0);
+		setpos(0, 0);
+		
+		setCurrentTableCell(0, 0);
+		
+		stringmode = false;
+		
+		outputtext = "";
+		Dom.removeAll(el_output.firstChild);
+		Dom.addText(el_output.firstChild, "");
+		
+		Dom.removeAll(el_stack.firstChild.firstChild.firstChild);
+		
+		loaded = true;
+		finished = false;
+		
+		el_output.value = "";
+		dirty_output = false;
+	}
+	
+	var setCurrentTableCell = function(x, y) {
+		var cell = gettablecell(lastpos[0], lastpos[1]);
+		if(cell)
+			cell.className = "";
+		
+		lastpos[0] = pos[0];
+		lastpos[1] = pos[1];
+		
+		cell = gettablecell(x, y);
+		cell.className = "current";
+	}
+	
+	var gettablecell = function(x, y) {
+		
+		var tbody = el_input.firstChild.firstChild;
+		var tr = tbody.childNodes[y];
+		if(!tr) return;
+		return tr.childNodes[x];
+		
+	}
+	var settablecell = function(x, y, c) {
+		var cell = gettablecell(x, y);
+		cell.firstChild.nodeValue = c == " " ? "&nbsp;" : c;
+	}
+	var end = function() {
+		finished = true;
+	}
+	
+	
+	
+	// donextcommand: returns 1 if advance should be called again
+	//			null otherwise
+	// should not do any interface updates, should run as past as possible
+	var donextcommand = function() {
+		if(!loaded) start();
+		
+		
+		var command = cells[pos[1]][pos[0]];
+		
+		if(stringmode && command != "\"") {
+			push(command.charCodeAt(0));
+		}
+		else{
+			docommand(command);
+		}
+		
+		if(finished) return;
+		
+		var x = pos[0] + velocity[0];
+		var y = pos[1] + velocity[1];
+		var i = 0;
+		while(!stringmode && skipspace && getcell(x, y) == " " && i < 500)
+		{
+			i++;
+			x += velocity[0];
+			y += velocity[1];			
+		}
+
+		while(x > max_width-1) x -= max_width;
+		while(x < 0) x += max_width;
+		while(y> max_height-1) y -= max_height;
+		while(y < 0) y += max_height;
+		
+		setpos(x, y);
+	}
+	var advance = function() {
+		if(finished) return;
+		var count = 0;
+		while(count < 80 && donextcommand()) {
+			count ++;
+		}
+	}
+	var updateinterface = function() {
+		// If stack is less or more than before
+		if(oldstacknum > 0 || newstack.length > 0) {
+			
+			var tr = el_stack.firstChild.firstChild.firstChild;
+			
+			for(; oldstacknum > 0; oldstacknum--) {
+				if(tr.firstChild)
+					Dom.remove(tr.firstChild);
+			}
+			for(var i=0; i<newstack.length; i++) {
+				var td;
+				if(!tr.firstChild)
+					td = Dom.add(tr, "td");
+				else
+					td = Dom.addBefore(tr.firstChild, "td");
+				Dom.addText(td, newstack[i]);
+				//
+			}
+			
+			while(newstack.length > 0) newstack.pop();
+			oldstacknum = 0;
+			
+			for(var i=0; i<tr.childNodes.length; i++) {
+				var j = tr.childNodes.length-1-i;
+				if(stack[j] != Number(tr.childNodes[i].firstChild.nodeValue))
+					log("STACK SYNC ERROR");
+			}
+			
+		}
+		
+		if(dirty_output) {
+			dirty_output = false;
+			el_output.firstChild.lastChild.nodeValue += outputtext;
+			var v = el_output.firstChild.lastChild.nodeValue;
+			if(v.length > 2048) {
+				el_output.firstChild.lastChild.nodeValue = v.substr(v.length-2048);
+			}
+		}
+		
+		setCurrentTableCell(pos[0], pos[1]);
+	}
+	
+	
+	// Public methods /////////////
+	
+	this.test = function() {
+		
+		var t = Number(new Date());
+		var cstr = "0123456789+-*/%!`><^v?_|\:\\$.,#pg&~@";
+		for(var j=0; j<10000; j++) {
+			for(var i=0; i<cstr.length; i++) {
+				var c = cstr.charAt(i);
+			}
+		}
+		log(Number(new Date()) - t);
+		
+	}
+	this.init = function() {
+		
+		el_code = $("code");
+		el_input = $("input");
+		el_output = $("output");
+		el_stack = $("stack");
+		
+	}
+	this.start = function() {
+		start();
+	}
+	this.advance = function() {
+		advance();
+	}
+	this.isfinished = function() {
+		return finished;
+	}
+	this.updateinterface = function() {
+		updateinterface();
+	}
+	this.skipspaces = function(yesno) {
+	    skipspace = yesno;
+	}
+}
+
+
+Event.add(window, "load", function() {
+	
+	
+	interpreter.init();
+	
+	
+	var interval;
+	var mousedowntime;
+
+	var pause = function() {
+		clearInterval(interval);
+		interval = null;
+		$("playbtn").value = "Play";
+	}
+	
+	
+	var play = function() {
+		
+		// todo: check the time the function took to run and minus that from the proposed delay
+		clearInterval(interval);
+		
+		var speed = $("slowrdo").checked ? 500 :
+					$("medrdo").checked ? 100 :
+					$("fastrdo").checked ? 10 :
+					$("sfastrdo").checked ? 0 : 0;
+					
+		if(speed == 0)
+		{
+			interval = setInterval(function() {
+				for(var i=0; i<100; i++) {
+					interpreter.advance();
+					if(interpreter.isfinished()) {
+						pause();
+						break;
+					}
+				}
+				interpreter.updateinterface();
+			}, 10);
+		}
+		else
+		{
+			interval = setInterval(function() {
+				interpreter.advance();
+				if(interpreter.isfinished())
+					pause();
+				interpreter.updateinterface();
+			}, speed);
+		}
+		
+		interpreter.advance();
+		
+		$("playbtn").value = "Pause";
+	}
+	
+	Event.add("resetbtn", "click", function(ev) {
+		interpreter.start();
+		interpreter.updateinterface();
+	});
+	
+	Event.add("nextbtn", "click", function(ev) {
+		interpreter.advance();
+		interpreter.updateinterface();
+	});
+	Event.add("playbtn", "mousedown", function(ev) {
+		if(interval) {
+			pause();
+		}else{
+			play();
+			mousedowntime = Number(new Date());
+		}
+	});
+	Event.add("playbtn", "mouseup", function(ev) {
+		if(Number(new Date() - mousedowntime) > 200)
+			pause();
+	});
+	Event.add("skipspacescheck", "click", function(ev) {
+		interpreter.skipspaces($("skipspacescheck").checked);
+	});
+	
+	Event.add("code", "focus", function(ev) {
+		var el = $("code");
+		var x = el.offsetLeft;
+		var y = el.offsetTop;
+		el.style.position = "absolute";
+		el.style.left = x+"px";
+		el.style.top = y+"px";
+		el.style.width = "600px";
+		el.style.height = "300px";
+
+		$("codepad").style.display = "block";
+	});
+	Event.add("code", "blur", function(ev) {
+		var el = $("code");
+		el.style.position = "static";
+		el.style.width = "200px";
+		el.style.height = "200px";
+		$("codepad").style.display = "none";
+	});
+	
+});
+</script>
+<style type="text/css">
+* {
+	margin: 0px;
+	padding: 0px;
+}
+body {
+	background-color: #333333;
+	color: #cccccc;
+	font-size: 10px;
+	padding: 2px;
+	font-family: arial;
+}
+#left {
+	float: left;
+	width: 200px;
+	margin-right: 5px;
+	border-right: 1px solid #222222;
+	padding: 2px;
+}
+#right {
+	margin-left: 240px;
+}
+
+
+#left input {
+	margin: 3px;
+	width: 16px;
+}
+#left label {
+	width: 70px;
+	vertical-align: middle;
+}
+#left .button {
+	width: 100px;
+}
+#left2 {
+	float: left;
+	margin-right: 10px;
+}
+
+table {
+	border-collapse: collapse;
+}
+#stack {
+	height: 40px;
+}
+#stack, #stack td {
+	font-family: monospace;
+	font-size: 11px;
+}
+#stack td {
+	border: 1px solid #222222;
+	padding: 2px;
+}
+#stack td:first-child {
+    background-color: #cccccc;
+    color: #333333;
+    font-weight: bold;
+}
+#input {
+	width: 100%;
+}
+#input td {
+	font-family: monospace;
+	font-size: 10pt;
+	border: 1px solid #222222;
+	text-align: center;
+	padding: 2px;
+	line-height: 1;
+}
+#input td.current {
+	background-color: #ffaa00;
+	color: #000000;
+}
+#code {
+	font-family: monospace;
+	width: 200px;
+	height: 200px;
+	background-color: #cccccc;
+	border: 1px solid #000000;
+}
+#codepad {
+	height: 200px;
+	display: none;
+}
+#output {
+	width: 100%;
+	height: 300px;
+}
+#output pre {
+	font-family: monospace;
+	font-size: 12px;
+}
+a {
+	color: #ffaa00;
+}
+h1 {
+	margin: 2px;
+	color: #ffaa00;
+}
+</style>
+</head>
+<body>
+
+<div id="left">
+
+<h1>Befunge</h1>
+<div id="left2">
+<label><input name="speed" value="1" id="slowrdo" type="radio">Slow</label><br>
+<label><input name="speed" value="1" id="medrdo" type="radio" checked=true>Medium</label><br>
+<label><input name="speed" value="1" id="fastrdo" type="radio">Fast</label><br>
+<label><input name="speed" value="1" id="sfastrdo" type="radio">Super fast</label><br>
+</div>
+
+<input value="Load/Reset" id="resetbtn" type="button"  class="button"><br>
+<input value="Next" id="nextbtn" type="button" class="button"><br>
+<input value="Play" id="playbtn" type="button" class="button"><br>
+<label><input type="checkbox" id="skipspacescheck" checked="true">Skip spaces</label>
+<textarea id="code" wrap="off" spellcheck="false">:0g,:93+`#@_1+</textarea>
+<div id="codepad"></div><br>
+<a href="http://catseye.tc/projects/befunge93/doc/website_befunge93.html">Befunge-93 Documentation</a><br>
+<a href="http://catseye.tc/projects/befunge93/eg/INDEX.html">Some examples</a><br>
+<a href="befunge.html">Save this page</a>
+</div>
+
+<div id="right">
+Stack: <div id="stack"><table><tbody><tr></tr></tbody></table></div>
+<div id="input"><br></div>
+<div id="output"><pre></pr></div>
+
+
+</div>
+
+
+</body></html>
